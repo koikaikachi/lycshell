@@ -10823,7 +10823,7 @@ AnimatorDefender.process = LPH_NO_VIRTUALIZE(function(self, track)
 
 	local configuredTiming = SaveManager.as:index(aid)
 
-	if ilr or configuredTiming then
+	if ilr then
 		debugAutoDefense(
 			"seen animation=%s entity=%s distance=%s inLoggerRange=%s autoDefense=%s configured=%s",
 			aid,
@@ -10849,7 +10849,7 @@ AnimatorDefender.process = LPH_NO_VIRTUALIZE(function(self, track)
 	---@type AnimationTiming?
 	local timing = self:initial(self.entity, SaveManager.as, self.entity.Name, aid)
 	if not timing then
-		if ilr or configuredTiming then
+		if ilr then
 			debugAutoDefense(
 				"no usable timing for animation=%s entity=%s configured=%s distance=%s",
 				aid,
@@ -11394,14 +11394,20 @@ Defender.initial = LPH_NO_VIRTUALIZE(function(self, from, pair, name, key)
 
 	-- Check for distance; if we have a timing.
 	if timing and (distance < PP_SCRAMBLE_NUM(timing.imdd) or distance > PP_SCRAMBLE_NUM(timing.imxd)) then
-		debugAutoDefense(
-			"no usable timing=%s key=%s reason=distance distance=%.1f range=%.1f-%.1f",
-			PP_SCRAMBLE_STR(timing.name),
-			PP_SCRAMBLE_STR(key),
-			distance,
-			PP_SCRAMBLE_NUM(timing.imdd),
-			PP_SCRAMBLE_NUM(timing.imxd)
-		)
+		if
+			distance >= (Configuration.expectOptionValue("MinimumLoggerDistance") or 0)
+			and distance <= (Configuration.expectOptionValue("MaximumLoggerDistance") or 0)
+		then
+			debugAutoDefense(
+				"no usable timing=%s key=%s reason=distance distance=%.1f range=%.1f-%.1f",
+				PP_SCRAMBLE_STR(timing.name),
+				PP_SCRAMBLE_STR(key),
+				distance,
+				PP_SCRAMBLE_NUM(timing.imdd),
+				PP_SCRAMBLE_NUM(timing.imxd)
+			)
+		end
+
 		return nil
 	end
 
