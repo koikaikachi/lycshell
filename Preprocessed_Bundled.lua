@@ -7908,7 +7908,7 @@ GameAdapter.capabilities = {
 	exploitTab = false,
 }
 
-GameAdapter.name = "Generic"
+GameAdapter.name = "Dueling Grounds"
 GameAdapter.configFolder = "Lycoris-Shell-Configs"
 GameAdapter.themeFolder = "Lycoris-Shell-Themes"
 GameAdapter.timingFolder = "Lycoris-Shell-Timings"
@@ -7963,6 +7963,19 @@ function GameAdapter.isLocalCharacter(model)
 end
 
 function GameAdapter.isAlive(model)
+	if not model then
+		return false
+	end
+
+	local health = model:GetAttribute("Health")
+	if typeof(health) == "number" and health <= 0 then
+		return false
+	end
+
+	if model:GetAttribute("IsDead") or model:GetAttribute("IsUntargetable") or model:GetAttribute("InSafeZone") then
+		return false
+	end
+
 	local humanoid = GameAdapter.getHumanoid(model)
 	return humanoid ~= nil and humanoid.Health > 0
 end
@@ -8021,6 +8034,8 @@ function GameAdapter.getTargetCandidates()
 		candidates[#candidates + 1] = model
 	end
 
+	-- Dueling Grounds exposes each player character through Players.*.Character,
+	-- while the actual model names are often all just "Player".
 	for _, player in ipairs(players:GetPlayers()) do
 		if player ~= players.LocalPlayer then
 			addCandidate(player.Character)
@@ -8376,6 +8391,27 @@ function GameAdapter.recordLocalState(duration, callback)
 end
 
 function GameAdapter.getCharacterState(_character)
+	if not _character then
+		return nil
+	end
+
+	if _character:GetAttribute("IsDead") then
+		return "Dead"
+	end
+
+	if _character:GetAttribute("IsBlocking") or _character:GetAttribute("ClientIsBlocking") then
+		return "Blocking"
+	end
+
+	local movementMode = _character:GetAttribute("MovementMode")
+	if movementMode then
+		return tostring(movementMode)
+	end
+
+	if _character:GetAttribute("IgnoreInput") then
+		return "Busy"
+	end
+
 	return nil
 end
 
@@ -8384,28 +8420,49 @@ function GameAdapter.isState(character, state)
 end
 
 function GameAdapter.isLocalDashing()
-	return false
+	local character = GameAdapter.getLocalCharacter()
+	return character and character:GetAttribute("MovementMode") == "Slide" or false
 end
 
 function GameAdapter.isLocalMovementBurst()
-	return false
+	local character = GameAdapter.getLocalCharacter()
+	local movementMode = character and character:GetAttribute("MovementMode")
+	return movementMode == "Linear" or movementMode == "Slide"
 end
 
 function GameAdapter.isLocalBusy()
-	return false
+	local character = GameAdapter.getLocalCharacter()
+	if not character then
+		return true
+	end
+
+	return character:GetAttribute("IgnoreInput") == true
+		or character:GetAttribute("IsDead") == true
+		or character:GetAttribute("IsUntargetable") == true
 end
 
 function GameAdapter.isKnocked(character)
+	if character then
+		local health = character:GetAttribute("Health")
+		if typeof(health) == "number" and health <= 0 then
+			return true
+		end
+
+		if character:GetAttribute("IsDead") then
+			return true
+		end
+	end
+
 	local humanoid = GameAdapter.getHumanoid(character)
 	return humanoid ~= nil and humanoid.Health <= 0
 end
 
 function GameAdapter.getParryCooldown(_character)
-	return 0
+	return 0.18
 end
 
 function GameAdapter.getDashCooldown(_character)
-	return 1.75
+	return 0.45
 end
 
 function GameAdapter.canParry(lastParry, character)
@@ -8458,6 +8515,21 @@ end
 
 function GameAdapter.preventSlow(_character, _humanoid)
 	return false
+end
+
+function GameAdapter.isLocalRootInBox(cframe, size)
+	local root = GameAdapter.getLocalRoot()
+	if not root then
+		return false
+	end
+
+	local halfSize = size / 2
+	local padding = root.Size / 2
+	local localPosition = cframe:PointToObjectSpace(root.Position)
+
+	return math.abs(localPosition.X) <= halfSize.X + padding.X
+		and math.abs(localPosition.Y) <= halfSize.Y + padding.Y
+		and math.abs(localPosition.Z) <= halfSize.Z + padding.Z
 end
 
 function GameAdapter.getPlayerTags(_player, _character)
@@ -11337,6 +11409,10 @@ Defender.hc = LPH_NO_VIRTUALIZE(function(self, options, info)
 	-- Run hitbox check.
 	local result, usedCFrame = self:hitbox(position, timing.fhb, hitbox, options.filter)
 
+	if not result and usedCFrame and GameAdapter.isLocalRootInBox then
+		result = GameAdapter.isLocalRootInBox(usedCFrame, hitbox)
+	end
+
 	if usedCFrame then
 		self:visualize(options.hmid, usedCFrame, hitbox, options:ghcolor(result))
 		self:visualize(options.hmid and options.hmid + 1 or nil, root.CFrame, root.Size, options:ghcolor(result))
@@ -11358,6 +11434,10 @@ Defender.hc = LPH_NO_VIRTUALIZE(function(self, options, info)
 	store:run(root, "CFrame", closest, function()
 		result, usedCFrame = self:hitbox(eposition, timing.fhb, hitbox, options.filter)
 	end)
+
+	if not result and usedCFrame and GameAdapter.isLocalRootInBox then
+		result = GameAdapter.isLocalRootInBox(usedCFrame, hitbox)
+	end
 
 	-- Visualize predicted hitbox.
 	if usedCFrame then
