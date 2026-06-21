@@ -14545,7 +14545,6 @@ function BuilderSection:timing()
 
 	self.timingName = tab:AddInput(nil, {
 		Text = "Timing Name",
-		Finished = true,
 	})
 
 	self:tide(tab)
@@ -14573,6 +14572,8 @@ function BuilderSection:timing()
 		-- Set timing list value.
 		self.timingList:SetValue(timing.name)
 		self.timingList:Display()
+
+		Logger.notify("Created timing '%s'.", timing.name)
 	end)
 
 	configDepBox:AddButton(
