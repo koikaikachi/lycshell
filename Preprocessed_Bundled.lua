@@ -10795,14 +10795,19 @@ AnimatorDefender.process = LPH_NO_VIRTUALIZE(function(self, track)
 			and distance <= (Configuration.expectOptionValue("MaximumLoggerDistance") or 0)
 		)
 
-	debugAutoDefense(
-		"seen animation=%s entity=%s distance=%s inLoggerRange=%s autoDefense=%s",
-		aid,
-		GameAdapter.getDisplayName(self.entity),
-		distance and string.format("%.1f", distance) or "nil",
-		tostring(ilr == true),
-		tostring(Configuration.expectToggleValue("EnableAutoDefense") == true)
-	)
+	local configuredTiming = SaveManager.as:index(aid)
+
+	if ilr or configuredTiming then
+		debugAutoDefense(
+			"seen animation=%s entity=%s distance=%s inLoggerRange=%s autoDefense=%s configured=%s",
+			aid,
+			GameAdapter.getDisplayName(self.entity),
+			distance and string.format("%.1f", distance) or "nil",
+			tostring(ilr == true),
+			tostring(Configuration.expectToggleValue("EnableAutoDefense") == true),
+			tostring(configuredTiming ~= nil)
+		)
+	end
 
 	-- Keyframe logging.
 	local keyframeReached = Signal.new(track.KeyframeReached)
@@ -10818,7 +10823,16 @@ AnimatorDefender.process = LPH_NO_VIRTUALIZE(function(self, track)
 	---@type AnimationTiming?
 	local timing = self:initial(self.entity, SaveManager.as, self.entity.Name, aid)
 	if not timing then
-		debugAutoDefense("no timing match for animation=%s entity=%s", aid, GameAdapter.getDisplayName(self.entity))
+		if ilr or configuredTiming then
+			debugAutoDefense(
+				"no usable timing for animation=%s entity=%s configured=%s distance=%s",
+				aid,
+				GameAdapter.getDisplayName(self.entity),
+				tostring(configuredTiming ~= nil),
+				distance and string.format("%.1f", distance) or "nil"
+			)
+		end
+
 		return
 	end
 
@@ -13503,6 +13517,9 @@ local PartBuilderSection = require("Menu/Objects/PartBuilderSection")
 ---@module Game.Timings.AnimationTiming
 local AnimationTiming = require("Game/Timings/AnimationTiming")
 
+---@module Game.Timings.Action
+local Action = require("Game/Timings/Action")
+
 ---@module Game.Timings.PartTiming
 local PartTiming = require("Game/Timings/PartTiming")
 
@@ -13528,6 +13545,11 @@ local BuilderTab = {
 	sbs = nil,
 }
 
+local DUELING_GROUNDS_STARTER_TIMINGS = {
+	{ name = "KAT_Light_01", id = "rbxassetid://93515445716459", tag = "M1", delay = 250, imxd = 35 },
+	{ name = "KAT_Heavy_01", id = "rbxassetid://109321801209648", tag = "Critical", delay = 350, imxd = 45 },
+}
+
 ---Refresh builder lists.
 function BuilderTab.refresh()
 	if BuilderTab.abs then
@@ -13544,6 +13566,56 @@ function BuilderTab.refresh()
 		BuilderTab.sbs:reset()
 		BuilderTab.sbs:refresh()
 	end
+end
+
+local function seedDuelingGroundsStarterTimings()
+	if not SaveManager.as or not SaveManager.as.config then
+		return Library:Notify("Animation timing container is not ready.", 4.0)
+	end
+
+	local added = 0
+	local updated = 0
+
+	local function applyStarter(timing, starter)
+		timing.name = starter.name
+		timing._id = starter.id
+		timing.tag = starter.tag
+		timing.imdd = 0
+		timing.imxd = starter.imxd
+		timing.fhb = true
+		timing.dp = false
+		timing.pfht = 0.15
+
+		local action = timing.actions:find("Parry")
+
+		if not action then
+			action = Action.new()
+			action.name = "Parry"
+			timing.actions:push(action)
+		end
+
+		action._type = "Parry"
+		action._when = starter.delay
+		action.hitbox = Vector3.new(15, 10, 23)
+	end
+
+	for _, starter in ipairs(DUELING_GROUNDS_STARTER_TIMINGS) do
+		local timing = SaveManager.as.config.timings[starter.id] or SaveManager.as.config:find(starter.name)
+
+		if timing then
+			applyStarter(timing, starter)
+			updated += 1
+			continue
+		end
+
+		timing = AnimationTiming.new()
+		applyStarter(timing, starter)
+		SaveManager.as.config:push(timing)
+		added += 1
+	end
+
+	BuilderTab.refresh()
+	Library:Notify(string.format("Seeded %i Dueling Grounds timing(s), updated %i.", added, updated), 5.0)
 end
 
 ---Initialize save manager section.
@@ -13805,6 +13877,10 @@ function BuilderTab.initLoggerSection(groupbox)
 
 	groupbox:AddButton("Copy Timing Snapshot", function()
 		exportReport("TimingSnapshot", buildTimingSnapshot())
+	end)
+
+	groupbox:AddButton("Seed Dueling Grounds Timings", function()
+		seedDuelingGroundsStarterTimings()
 	end)
 
 	groupbox:AddButton("Record Local State 8s", function()
