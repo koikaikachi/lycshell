@@ -2700,6 +2700,10 @@ return LPH_NO_VIRTUALIZE(function()
 				Box.Text = Text
 			end
 
+			function Textbox:SyncValue()
+				Textbox:SetRawValue(Box.Text)
+			end
+
 			function Textbox:SetValue(Text)
 				if Info.MaxLength and #Text > Info.MaxLength then
 					Text = Text:sub(1, Info.MaxLength)
@@ -13561,7 +13565,7 @@ local BuilderTab = {
 }
 
 local DUELING_GROUNDS_STARTER_TIMINGS = {
-	{ name = "KAT_Light_01", id = "rbxassetid://93515445716459", tag = "M1", delay = 250, imxd = 35 },
+	{ name = "KAT_Light_01", id = "rbxassetid://93515445716459", tag = "M1", delay = 50, imxd = 35 },
 	{ name = "KAT_Heavy_01", id = "rbxassetid://109321801209648", tag = "Critical", delay = 350, imxd = 45 },
 }
 
@@ -13986,6 +13990,39 @@ function AnimationBuilderSection:tide(tab)
 	})
 end
 
+---Sync extra timing inputs.
+function AnimationBuilderSection:syncExtraTimingFields()
+	self:syncInput(self.animationId)
+	self:syncInput(self.repeatStartDelay)
+	self:syncInput(self.repeatParryDelay)
+	self:syncInput(self.maxAnimationTimeout)
+end
+
+---Fetch animation timing ID from visible fields.
+---@param timing AnimationTiming?
+---@return string
+function AnimationBuilderSection:fieldTimingId(timing)
+	return self:readString(self.animationId, timing and timing:id() or "")
+end
+
+---Apply animation-specific fields.
+---@param timing AnimationTiming
+function AnimationBuilderSection:applyExtraTimingFields(timing)
+	timing._id = self:readString(self.animationId, timing._id)
+	timing.rpue = self:readBoolean(self.repeatUntilParryEnd, timing.rpue)
+	timing._rsd = self:readNumber(self.repeatStartDelay, timing._rsd)
+	timing._rpd = self:readNumber(self.repeatParryDelay, timing._rpd)
+	timing.ha = self:readBoolean(self.hyperarmor, timing.ha)
+	timing.iae = self:readBoolean(self.ignoreAnimationEnd, timing.iae)
+	timing.ieae = self:readBoolean(self.ignoreEarlyAnimationEnd, timing.ieae)
+	timing.mat = self:readNumber(self.maxAnimationTimeout, timing.mat)
+	timing.phd = self:readBoolean(self.pastHitboxDetection, timing.phd)
+	timing.pfh = self:readBoolean(self.predictFacingHitboxes, timing.pfh)
+	timing.phds = self:readNumber(self.historySeconds, timing.phds)
+	timing.pfht = self:readNumber(self.extrapolationTime, timing.pfht)
+	timing.dp = self:readBoolean(self.disablePrediction, timing.dp)
+end
+
 ---Load the extra elements. Override me.
 ---@param timing AnimationTiming
 function AnimationBuilderSection:exload(timing)
@@ -14001,6 +14038,7 @@ function AnimationBuilderSection:exload(timing)
 	self.predictFacingHitboxes:SetRawValue(timing.pfh)
 	self.historySeconds:SetRawValue(timing.phds)
 	self.extrapolationTime:SetRawValue(timing.pfht)
+	self.disablePrediction:SetRawValue(timing.dp)
 end
 
 ---Reset the elements. Extend me.
@@ -14018,6 +14056,7 @@ function AnimationBuilderSection:reset()
 	self.pastHitboxDetection:SetRawValue(false)
 	self.historySeconds:SetRawValue(0.5)
 	self.predictFacingHitboxes:SetRawValue(false)
+	self.disablePrediction:SetRawValue(false)
 	self.extrapolationTime:SetRawValue(0.15)
 end
 
@@ -14051,7 +14090,7 @@ end
 ---@return Timing
 function AnimationBuilderSection:create()
 	local timing = AnimationTiming.new()
-	self:cset(timing)
+	self:applyTimingFields(timing)
 	return timing
 end
 
@@ -14259,6 +14298,65 @@ BuilderSection.__index = BuilderSection
 -- Services.
 local stats = game:GetService("Stats")
 
+local DEFAULT_ACTION_DELAY = 50
+local DEFAULT_ACTION_HITBOX = Vector3.new(15, 10, 23)
+
+local function syncInput(element)
+	if element and element.SyncValue then
+		element:SyncValue()
+	end
+end
+
+local function readNumber(element, fallback)
+	if element then
+		syncInput(element)
+	end
+
+	local value = element and tonumber(element.Value)
+	if value == nil then
+		return fallback
+	end
+
+	return value
+end
+
+local function readString(element, fallback)
+	if element then
+		syncInput(element)
+	end
+
+	local value = element and element.Value
+	if value == nil then
+		return fallback
+	end
+
+	return tostring(value)
+end
+
+local function readBoolean(element, fallback)
+	if element and typeof(element.Value) == "boolean" then
+		return element.Value
+	end
+
+	return fallback
+end
+
+function BuilderSection:readNumber(element, fallback)
+	return readNumber(element, fallback)
+end
+
+function BuilderSection:readString(element, fallback)
+	return readString(element, fallback)
+end
+
+function BuilderSection:readBoolean(element, fallback)
+	return readBoolean(element, fallback)
+end
+
+function BuilderSection:syncInput(element)
+	syncInput(element)
+end
+
 ---Create timing ID element. Override me.
 ---@param tab table
 function BuilderSection:tide(tab) end
@@ -14321,21 +14419,15 @@ end
 ---Check before creating new timing. Override me.
 ---@return boolean
 function BuilderSection:check()
-	if not self.timingName.Value or #self.timingName.Value <= 0 then
-		return Logger.longNotify("Please enter a valid timing name.")
-	end
-
-	if self.pair:find(self.timingName.Value) then
-		return Logger.longNotify("The timing '%s' already exists in the list.", self.timingName.Value)
-	end
-
-	return true
+	return self:validateTimingFields(nil)
 end
 
 ---Check before creating new action. Override me.
 ---@param timing Timing
 ---@return boolean
 function BuilderSection:acheck(timing)
+	self:syncActionFields()
+
 	if not self.actionName.Value or #self.actionName.Value <= 0 then
 		return Logger.longNotify("Please enter a valid action name.")
 	end
@@ -14347,17 +14439,126 @@ function BuilderSection:acheck(timing)
 	return true
 end
 
+---Sync text inputs before button callbacks read them.
+function BuilderSection:syncTimingFields()
+	syncInput(self.timingName)
+	syncInput(self.selectedModule)
+	self:syncExtraTimingFields()
+end
+
+---Sync extra timing inputs. Override me.
+function BuilderSection:syncExtraTimingFields() end
+
+---Sync action inputs before button callbacks read them.
+function BuilderSection:syncActionFields()
+	syncInput(self.actionName)
+	syncInput(self.actionDelay)
+	self:syncExtraActionFields()
+end
+
+---Sync extra action inputs. Override me.
+function BuilderSection:syncExtraActionFields() end
+
+---Fetch the timing identifier represented by the visible fields. Override me.
+---@param timing Timing?
+---@return string
+function BuilderSection:fieldTimingId(timing)
+	return readString(self.timingName, timing and timing:id() or "")
+end
+
+---Validate visible timing fields before creating or updating.
+---@param timing Timing?
+---@return boolean
+function BuilderSection:validateTimingFields(timing)
+	self:syncTimingFields()
+
+	local name = readString(self.timingName, "")
+	if #name <= 0 then
+		return Logger.longNotify("Please enter a valid timing name.")
+	end
+
+	local existingName = self.pair.config:find(name)
+	if existingName and existingName ~= timing then
+		return Logger.longNotify("The timing '%s' already exists in the list.", name)
+	end
+
+	local id = self:fieldTimingId(timing)
+	if not id or #id <= 0 then
+		return Logger.longNotify("Please enter a valid timing ID.")
+	end
+
+	local existingId = self.pair.config.timings[id]
+	if existingId and existingId ~= timing then
+		return Logger.longNotify("The timing ID '%s' is already in the list.", id)
+	end
+
+	return true
+end
+
 ---Set creation timing properties. Override me.
 ---@param timing Timing
 function BuilderSection:cset(timing)
 	timing.name = self.timingName.Value
 end
 
+---Apply visible timing fields to a timing.
+---@param timing Timing
+function BuilderSection:applyTimingFields(timing)
+	self:syncTimingFields()
+	self:cset(timing)
+
+	timing.tag = self.timingTag.Value or timing.tag
+	timing.imdd = readNumber(self.initialMinimumDistance, timing.imdd)
+	timing.imxd = readNumber(self.initialMaximumDistance, timing.imxd)
+	timing.duih = readBoolean(self.delayUntilInHitbox, timing.duih)
+	timing.punishable = readNumber(self.punishableWindow, timing.punishable)
+	timing.after = readNumber(self.afterWindow, timing.after)
+	timing.hitbox = Vector3.new(
+		readNumber(self.timingHitboxWidth, timing.hitbox.X),
+		readNumber(self.timingHitboxHeight, timing.hitbox.Y),
+		readNumber(self.timingHitboxLength, timing.hitbox.Z)
+	)
+	timing.umoa = readBoolean(self.useModuleOverActions, timing.umoa)
+	timing.smn = readBoolean(self.skipModuleNotification, timing.smn)
+	timing.srpn = readBoolean(self.skipRepeatNotification, timing.srpn)
+	timing.smod = readString(self.selectedModule, timing.smod)
+	timing.fhb = readBoolean(self.hitboxFacingOffset, timing.fhb)
+	timing.ndfb = readBoolean(self.noDashFallback, timing.ndfb)
+
+	self:applyExtraTimingFields(timing)
+end
+
+---Apply extra visible timing fields. Override me.
+---@param timing Timing
+function BuilderSection:applyExtraTimingFields(timing) end
+
+---Apply visible action fields to an action.
+---@param action Action
+function BuilderSection:applyActionFields(action)
+	self:syncActionFields()
+
+	action.name = readString(self.actionName, action.name)
+	action._type = self.actionType.Value or action._type or "Parry"
+	action._when = readNumber(self.actionDelay, action._when or DEFAULT_ACTION_DELAY)
+	action.ihbc = readBoolean(self.ignoreHitboxCheck, action.ihbc)
+	action.hitbox = Vector3.new(
+		readNumber(self.hitboxWidth, action.hitbox.X),
+		readNumber(self.hitboxHeight, action.hitbox.Y),
+		readNumber(self.hitboxLength, action.hitbox.Z)
+	)
+
+	self:applyExtraActionFields(action)
+end
+
+---Apply extra visible action fields. Override me.
+---@param action Action
+function BuilderSection:applyExtraActionFields(action) end
+
 ---Create new timing. Override me.
 ---@return Timing
 function BuilderSection:create()
 	local timing = Timing.new()
-	self:cset(timing)
+	self:applyTimingFields(timing)
 	return timing
 end
 
@@ -14369,12 +14570,12 @@ end
 ---Reset action elements.
 function BuilderSection:raction()
 	self.actionName:SetRawValue("")
-	self.actionDelay:SetRawValue(0)
+	self.actionDelay:SetRawValue(DEFAULT_ACTION_DELAY)
 	self.actionType:SetRawValue("Parry")
-	self.ignoreHitboxCheck:SetRawValue(false)
-	self.hitboxHeight:SetRawValue(0)
-	self.hitboxLength:SetRawValue(0)
-	self.hitboxWidth:SetRawValue(0)
+	self.ignoreHitboxCheck:SetRawValue(true)
+	self.hitboxHeight:SetRawValue(DEFAULT_ACTION_HITBOX.Y)
+	self.hitboxLength:SetRawValue(DEFAULT_ACTION_HITBOX.Z)
+	self.hitboxWidth:SetRawValue(DEFAULT_ACTION_HITBOX.X)
 end
 
 ---Refresh timing list.
@@ -14604,8 +14805,7 @@ function BuilderSection:baction(base)
 
 			-- Create new action.
 			local action = Action.new()
-			action.name = self.actionName.Value
-			action._type = "Parry"
+			self:applyActionFields(action)
 
 			-- Record ping for telemetry.
 			local network = stats:FindFirstChild("Network")
@@ -14629,6 +14829,42 @@ function BuilderSection:baction(base)
 	)
 
 	base:AddButton(
+		"Update Selected Action",
+		self:tanc(function(timing, action)
+			self:syncActionFields()
+			local oldName = action.name
+			local newName = readString(self.actionName, oldName)
+
+			if #newName <= 0 then
+				return Logger.longNotify("Please enter a valid action name.")
+			end
+
+			local existing = timing.actions:find(newName)
+			if existing and existing ~= action then
+				return Logger.longNotify("The action '%s' already exists in the list.", newName)
+			end
+
+			-- Re-key safely if the visible action name changed.
+			if oldName ~= newName then
+				timing.actions:remove(action)
+				self:applyActionFields(action)
+				timing.actions:push(action)
+			else
+				self:applyActionFields(action)
+			end
+
+			-- Refresh action list.
+			self:arefresh(timing)
+
+			-- Set action list value.
+			self.actionList:SetValue(action.name)
+			self.actionList:Display()
+
+			Logger.notify("Updated action '%s'.", action.name)
+		end)
+	)
+
+	base:AddButton(
 		"Duplicate Selected Action",
 		self:tanc(function(timing, action)
 			-- Fetch actions.
@@ -14641,7 +14877,7 @@ function BuilderSection:baction(base)
 
 			-- Create new action.
 			local newAction = action:clone()
-			newAction.name = self.actionName.Value
+			self:applyActionFields(newAction)
 
 			-- Record ping for telemetry.
 			local network = stats:FindFirstChild("Network")
@@ -14789,6 +15025,42 @@ function BuilderSection:timing()
 	end)
 
 	configDepBox:AddButton(
+		"Update Selected Timing",
+		self:tnc(function(timing)
+			-- Fetch config.
+			local config = self.pair.config
+
+			-- Validate visible fields before mutating the timing or key.
+			if not self:validateTimingFields(timing) then
+				return
+			end
+
+			local oldId = timing:id()
+
+			-- Apply visible fields.
+			self:applyTimingFields(timing)
+
+			local newId = timing:id()
+			if oldId ~= newId then
+				config.timings[oldId] = nil
+				config.timings[newId] = timing
+			end
+
+			-- Refresh timing list.
+			self:refresh()
+
+			-- Set timing list value.
+			self.timingList:SetValue(timing.name)
+			self.timingList:Display()
+
+			-- Refresh action list for the updated timing.
+			self:arefresh(timing)
+
+			Logger.notify("Updated timing '%s'.", timing.name)
+		end)
+	)
+
+	configDepBox:AddButton(
 		"Duplicate Selected Timing",
 		self:tnc(function(found)
 			-- Fetch config.
@@ -14803,7 +15075,7 @@ function BuilderSection:timing()
 			local timing = found:clone()
 
 			-- Set creation properties.
-			self:cset(timing)
+			self:applyTimingFields(timing)
 
 			-- Push new timing.
 			config:push(timing)
@@ -15114,6 +15386,29 @@ function SoundBuilderSection:tide(tab)
 	})
 end
 
+---Sync extra timing inputs.
+function SoundBuilderSection:syncExtraTimingFields()
+	self:syncInput(self.soundId)
+	self:syncInput(self.repeatStartDelay)
+	self:syncInput(self.repeatParryDelay)
+end
+
+---Fetch sound timing ID from visible fields.
+---@param timing SoundTiming?
+---@return string
+function SoundBuilderSection:fieldTimingId(timing)
+	return self:readString(self.soundId, timing and timing:id() or "")
+end
+
+---Apply sound-specific fields.
+---@param timing SoundTiming
+function SoundBuilderSection:applyExtraTimingFields(timing)
+	timing._id = self:readString(self.soundId, timing._id)
+	timing.rpue = self:readBoolean(self.repeatUntilParryEnd, timing.rpue)
+	timing._rsd = self:readNumber(self.repeatStartDelay, timing._rsd)
+	timing._rpd = self:readNumber(self.repeatParryDelay, timing._rpd)
+end
+
 ---Load the extra elements. Override me.
 ---@param timing Timing
 function SoundBuilderSection:exload(timing)
@@ -15161,7 +15456,7 @@ end
 ---@return Timing
 function SoundBuilderSection:create()
 	local timing = SoundTiming.new()
-	self:cset(timing)
+	self:applyTimingFields(timing)
 	return timing
 end
 
@@ -15261,6 +15556,25 @@ function PartBuilderSection:check()
 	return true
 end
 
+---Sync extra timing inputs.
+function PartBuilderSection:syncExtraTimingFields()
+	self:syncInput(self.partName)
+end
+
+---Fetch part timing ID from visible fields.
+---@param timing PartTiming?
+---@return string
+function PartBuilderSection:fieldTimingId(timing)
+	return self:readString(self.partName, timing and timing:id() or "")
+end
+
+---Apply part-specific fields.
+---@param timing PartTiming
+function PartBuilderSection:applyExtraTimingFields(timing)
+	timing.pname = self:readString(self.partName, timing.pname)
+	timing.uhc = self:readBoolean(self.useHitboxCFrame, timing.uhc)
+end
+
 ---Load the extra elements. Override me.
 ---@param timing Timing
 function PartBuilderSection:exload(timing)
@@ -15285,7 +15599,7 @@ end
 ---@return PartTiming
 function PartBuilderSection:create()
 	local timing = PartTiming.new()
-	self:cset(timing)
+	self:applyTimingFields(timing)
 	return timing
 end
 
