@@ -9569,6 +9569,12 @@ function CombatTab.initAutoDefenseSection(groupbox)
 		Callback = Defense.visualizations,
 	})
 
+	autoDefenseDepBox:AddToggle("AutoDefenseDebug", {
+		Text = "Debug Auto Defense",
+		Default = false,
+		Tooltip = "Logs animation matching and auto-defense decisions to the telemetry logger.",
+	})
+
 	autoDefenseDepBox:AddToggle("DashOnParryCooldown", {
 		Text = "Dash On Parry Cooldown",
 		Default = false,
@@ -10421,6 +10427,14 @@ local MAX_REPEAT_TIME = 5.0
 local HISTORY_STEPS = 5.0
 local PREDICT_FACING_DELTA = 0.3
 
+local function debugAutoDefense(message, ...)
+	if not Configuration.expectToggleValue("AutoDefenseDebug") then
+		return
+	end
+
+	Library:AddTelemetryEntry("[AP] " .. string.format(message, ...))
+end
+
 ---Is animation stopped? Made into a function for de-duplication.
 ---@param self AnimatorDefender
 ---@param track AnimationTrack
@@ -10781,6 +10795,15 @@ AnimatorDefender.process = LPH_NO_VIRTUALIZE(function(self, track)
 			and distance <= (Configuration.expectOptionValue("MaximumLoggerDistance") or 0)
 		)
 
+	debugAutoDefense(
+		"seen animation=%s entity=%s distance=%s inLoggerRange=%s autoDefense=%s",
+		aid,
+		GameAdapter.getDisplayName(self.entity),
+		distance and string.format("%.1f", distance) or "nil",
+		tostring(ilr == true),
+		tostring(Configuration.expectToggleValue("EnableAutoDefense") == true)
+	)
+
 	-- Keyframe logging.
 	local keyframeReached = Signal.new(track.KeyframeReached)
 
@@ -10795,14 +10818,25 @@ AnimatorDefender.process = LPH_NO_VIRTUALIZE(function(self, track)
 	---@type AnimationTiming?
 	local timing = self:initial(self.entity, SaveManager.as, self.entity.Name, aid)
 	if not timing then
+		debugAutoDefense("no timing match for animation=%s entity=%s", aid, GameAdapter.getDisplayName(self.entity))
 		return
 	end
+
+	debugAutoDefense(
+		"matched animation=%s timing=%s actions=%i rpue=%s umoa=%s",
+		aid,
+		timing.name,
+		timing.actions and timing.actions:count() or 0,
+		tostring(timing.rpue),
+		tostring(timing.umoa)
+	)
 
 	if ilr then
 		Library:AddExistAnimEntry(self.entity.Name, distance, timing)
 	end
 
 	if not Configuration.expectToggleValue("EnableAutoDefense") then
+		debugAutoDefense("matched timing=%s but Enable Auto Defense is off", timing.name)
 		return
 	end
 
@@ -10850,6 +10884,10 @@ AnimatorDefender.process = LPH_NO_VIRTUALIZE(function(self, track)
 
 	---@note: Start processing the timing. Add the actions if we're not RPUE.
 	if not timing.rpue then
+		if timing.actions and timing.actions:count() == 0 then
+			debugAutoDefense("matched timing=%s but it has no actions", timing.name)
+		end
+
 		return self:actions(timing)
 	end
 
@@ -13624,6 +13662,74 @@ function BuilderTab.initLoggerSection(groupbox)
 		Library:Notify(string.format("Debug report %s.", action), 4.0)
 	end
 
+	local function buildTimingSnapshot()
+		local lines = {
+			string.format("Game: %s", GameAdapter.name),
+			"Timing Snapshot:",
+		}
+
+		local function appendAction(action)
+			lines[#lines + 1] = string.format(
+				"      action=%s type=%s delay=%sms hitbox=(%s,%s,%s) ihbc=%s",
+				tostring(action.name),
+				tostring(action._type),
+				tostring(action._when),
+				tostring(action.hitbox.X),
+				tostring(action.hitbox.Y),
+				tostring(action.hitbox.Z),
+				tostring(action.ihbc)
+			)
+		end
+
+		local function appendContainer(label, container)
+			if not container then
+				lines[#lines + 1] = string.format("  %s: nil", label)
+				return
+			end
+
+			local list = container:list()
+			lines[#lines + 1] = string.format("  %s: %i", label, #list)
+
+			for _, timing in next, list do
+				lines[#lines + 1] = string.format(
+					"    id=%s name=%s tag=%s distance=%s-%s actions=%i rpue=%s umoa=%s",
+					tostring(timing:id()),
+					tostring(timing.name),
+					tostring(timing.tag),
+					tostring(timing.imdd),
+					tostring(timing.imxd),
+					timing.actions and timing.actions:count() or 0,
+					tostring(timing.rpue),
+					tostring(timing.umoa)
+				)
+
+				if timing.actions then
+					for _, action in next, timing.actions:get() do
+						appendAction(action)
+					end
+				end
+			end
+		end
+
+		local function appendPair(label, pair)
+			lines[#lines + 1] = label .. ":"
+
+			if not pair then
+				lines[#lines + 1] = "  nil"
+				return
+			end
+
+			appendContainer("config", pair.config)
+			appendContainer("internal", pair.internal)
+		end
+
+		appendPair("Animation", SaveManager.as)
+		appendPair("Part", SaveManager.ps)
+		appendPair("Sound", SaveManager.ss)
+
+		return table.concat(lines, "\n")
+	end
+
 	local animVisualizerToggle = groupbox:AddToggle("ShowAnimationVisualizer", {
 		Text = "Show Animation Visualizer",
 		Default = false,
@@ -13695,6 +13801,10 @@ function BuilderTab.initLoggerSection(groupbox)
 		end
 
 		exportReport("TargetSnapshot", GameAdapter.buildTargetDebugReport(distance, 12))
+	end)
+
+	groupbox:AddButton("Copy Timing Snapshot", function()
+		exportReport("TimingSnapshot", buildTimingSnapshot())
 	end)
 
 	groupbox:AddButton("Record Local State 8s", function()
