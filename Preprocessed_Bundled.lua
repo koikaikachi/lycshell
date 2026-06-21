@@ -1,7 +1,3 @@
-
-
-uwu
-
 -- Bundled by BuildBundle.js. Do not edit this generated file directly.
 local __bundle_modules = {}
 local __bundle_cache = {}
