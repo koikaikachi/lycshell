@@ -10593,15 +10593,30 @@ AnimatorDefender.valid = LPH_NO_VIRTUALIZE(function(self, timing, action)
 
 	local target = self:target(self.entity)
 	if not target then
+		debugAutoDefense(
+			"valid=false timing=%s entity=%s reason=target-not-viable",
+			PP_SCRAMBLE_STR(timing.name),
+			GameAdapter.getDisplayName(self.entity)
+		)
 		return self:notify(timing, "Not a viable target.")
 	end
 
 	local root = GameAdapter.getRoot(self.entity)
 	if not root then
+		debugAutoDefense(
+			"valid=false timing=%s entity=%s reason=no-attacker-root",
+			PP_SCRAMBLE_STR(timing.name),
+			GameAdapter.getDisplayName(self.entity)
+		)
 		return self:notify(timing, "No humanoid root part found.")
 	end
 
 	if self:stopped(self.track, timing) then
+		debugAutoDefense(
+			"valid=false timing=%s entity=%s reason=animation-stopped",
+			PP_SCRAMBLE_STR(timing.name),
+			GameAdapter.getDisplayName(self.entity)
+		)
 		return false
 	end
 
@@ -10623,6 +10638,13 @@ AnimatorDefender.valid = LPH_NO_VIRTUALIZE(function(self, timing, action)
 	if pc then
 		return true
 	end
+
+	debugAutoDefense(
+		"valid=false timing=%s entity=%s reason=not-in-hitbox ihbc=%s",
+		PP_SCRAMBLE_STR(timing.name),
+		GameAdapter.getDisplayName(self.entity),
+		tostring(action and action.ihbc)
+	)
 
 	return self:notify(timing, "Not in hitbox.")
 end)
@@ -11059,6 +11081,14 @@ local MAX_VISUALIZATION_TIME = 5.0
 local MAX_REPEAT_WAIT = 10.0
 local PREDICTION_LENIENCY_MULTI = 5.0
 
+local function debugAutoDefense(message, ...)
+	if not Configuration.expectToggleValue("AutoDefenseDebug") then
+		return
+	end
+
+	Library:AddTelemetryEntry("[AP] " .. string.format(message, ...))
+end
+
 ---Log a miss to the UI library with distance check.
 ---@param type string
 ---@param key string
@@ -11187,22 +11217,32 @@ Defender.valid = LPH_NO_VIRTUALIZE(function(self, timing, action)
 
 	local character = GameAdapter.getLocalCharacter()
 	if not character then
+		debugAutoDefense("valid=false timing=%s reason=no-local-character", PP_SCRAMBLE_STR(timing.name))
 		return self:notify(timing, "No character found.")
 	end
 
 	if selectedFilters["Disable When Knocked Recently"] and AttributeListener.krecently() then
+		debugAutoDefense("valid=false timing=%s reason=knocked-recently", PP_SCRAMBLE_STR(timing.name))
 		return self:notify(timing, "User was knocked recently.")
 	end
 
 	if selectedFilters["Disable When In Dash"] and GameAdapter.isLocalDashing() then
+		debugAutoDefense("valid=false timing=%s reason=local-dashing", PP_SCRAMBLE_STR(timing.name))
 		return self:notify(timing, "User is dashing.")
 	end
 
 	if selectedFilters["Disable When In Movement Burst"] and GameAdapter.isLocalMovementBurst() then
+		debugAutoDefense("valid=false timing=%s reason=local-movement-burst", PP_SCRAMBLE_STR(timing.name))
 		return self:notify(timing, "User is using movement burst.")
 	end
 
 	if GameAdapter.isLocalBusy() then
+		debugAutoDefense(
+			"valid=false timing=%s reason=local-busy state=%s ignoreInput=%s",
+			PP_SCRAMBLE_STR(timing.name),
+			tostring(GameAdapter.getCharacterState(character)),
+			tostring(character:GetAttribute("IgnoreInput"))
+		)
 		return self:notify(timing, "Local character is busy.")
 	end
 
@@ -11212,10 +11252,12 @@ Defender.valid = LPH_NO_VIRTUALIZE(function(self, timing, action)
 		selectedFilters["Disable When Textbox Focused"]
 		and (userInputService:GetFocusedTextBox() or (chatInputBarConfiguration and chatInputBarConfiguration.IsFocused))
 	then
+		debugAutoDefense("valid=false timing=%s reason=textbox-focused", PP_SCRAMBLE_STR(timing.name))
 		return self:notify(timing, "User is typing in a text box.")
 	end
 
 	if selectedFilters["Disable When Window Not Active"] and iswindowactive and not iswindowactive() then
+		debugAutoDefense("valid=false timing=%s reason=window-inactive", PP_SCRAMBLE_STR(timing.name))
 		return self:notify(timing, "Window is not active.")
 	end
 
@@ -11223,22 +11265,27 @@ Defender.valid = LPH_NO_VIRTUALIZE(function(self, timing, action)
 		selectedFilters["Disable When Holding Block"]
 		and userInputService:IsKeyDown(Keybinding.info["Block / Parry"] or GameAdapter.getBlockKeybind())
 	then
+		debugAutoDefense("valid=false timing=%s reason=holding-block", PP_SCRAMBLE_STR(timing.name))
 		return self:notify(timing, "User is holding block.")
 	end
 
 	if timing.tag == "M1" and selectedFilters["Filter Out M1s"] then
+		debugAutoDefense("valid=false timing=%s reason=filter-m1", PP_SCRAMBLE_STR(timing.name))
 		return self:notify(timing, "Attacker is using a 'M1' attack.")
 	end
 
 	if timing.tag == "Mantra" and selectedFilters["Filter Out Mantras"] then
+		debugAutoDefense("valid=false timing=%s reason=filter-mantra", PP_SCRAMBLE_STR(timing.name))
 		return self:notify(timing, "Attacker is using a 'Mantra' attack.")
 	end
 
 	if timing.tag == "Critical" and selectedFilters["Filter Out Criticals"] then
+		debugAutoDefense("valid=false timing=%s reason=filter-critical", PP_SCRAMBLE_STR(timing.name))
 		return self:notify(timing, "Attacker is using a 'Critical' attack.")
 	end
 
 	if timing.tag == "Undefined" and selectedFilters["Filter Out Undefined"] then
+		debugAutoDefense("valid=false timing=%s reason=filter-undefined", PP_SCRAMBLE_STR(timing.name))
 		return self:notify(timing, "Attacker is using an 'Undefined' attack.")
 	end
 
@@ -11347,6 +11394,14 @@ Defender.initial = LPH_NO_VIRTUALIZE(function(self, from, pair, name, key)
 
 	-- Check for distance; if we have a timing.
 	if timing and (distance < PP_SCRAMBLE_NUM(timing.imdd) or distance > PP_SCRAMBLE_NUM(timing.imxd)) then
+		debugAutoDefense(
+			"no usable timing=%s key=%s reason=distance distance=%.1f range=%.1f-%.1f",
+			PP_SCRAMBLE_STR(timing.name),
+			PP_SCRAMBLE_STR(key),
+			distance,
+			PP_SCRAMBLE_NUM(timing.imdd),
+			PP_SCRAMBLE_NUM(timing.imxd)
+		)
 		return nil
 	end
 
@@ -11579,6 +11634,15 @@ Defender.handle = LPH_NO_VIRTUALIZE(function(self, timing, action, notify)
 		return InputClient.dash()
 	end
 
+	debugAutoDefense(
+		"parry unavailable timing=%s lastParryAge=%s dashReady=%s blockFallback=%s dashFallback=%s",
+		PP_SCRAMBLE_STR(timing.name),
+		AttributeListener.lastParry and string.format("%.3f", tick() - AttributeListener.lastParry) or "nil",
+		tostring(AttributeListener.cdash()),
+		tostring(Configuration.expectToggleValue("DeflectBlockFallback")),
+		tostring(Configuration.expectToggleValue("DashOnParryCooldown"))
+	)
+
 	---Block fallback function. Returns whether the fallback was successful.
 	---@return boolean
 	local function blockFallback()
@@ -11667,6 +11731,7 @@ Defender.clean = LPH_NO_VIRTUALIZE(function(self)
 
 	-- Was there a start block, end block, or parry?
 	local blocking = false
+	local cancelled = 0
 
 	for idx, task in next, self.tasks do
 		-- Cancel task.
@@ -11678,6 +11743,11 @@ Defender.clean = LPH_NO_VIRTUALIZE(function(self)
 		-- Check.
 		blocking = blocking
 			or (task.identifier == "Start Block" or task.identifier == "End Block" or task.identifier == "Parry")
+		cancelled = cancelled + 1
+	end
+
+	if cancelled > 0 then
+		debugAutoDefense("clean cancelledTasks=%i blocking=%s", cancelled, tostring(blocking))
 	end
 
 	-- Run end block, just in case we get stuck.
@@ -11727,11 +11797,23 @@ Defender.action = LPH_NO_VIRTUALIZE(function(self, timing, action)
 
 	-- Get initial receive delay.
 	local rdelay = self.rdelay()
+	local initialSendDelay = self.sdelay()
+	local scheduledDelay = action:when() - rdelay - initialSendDelay
 
 	-- Add action.
 	self:mark(Task.new(PP_SCRAMBLE_STR(action._type), function()
 		return action:when() - rdelay - self.sdelay()
 	end, timing.punishable, timing.after, self.handle, self, timing, action))
+
+	debugAutoDefense(
+		"scheduled action=%s timing=%s actionDelay=%.3f rdelay=%.3f sdelay=%.3f scheduledDelay=%.3f",
+		PP_SCRAMBLE_STR(action.name),
+		PP_SCRAMBLE_STR(timing.name),
+		action:when(),
+		rdelay,
+		initialSendDelay,
+		scheduledDelay
+	)
 
 	-- Log.
 	if not LRM_UserNote or LRM_UserNote == "tester" then
@@ -12299,7 +12381,7 @@ end)
 ---@param model Model
 ---@return Target?
 Targeting.find = LPH_NO_VIRTUALIZE(function(model)
-	for _, target in next, Targeting.best() do
+	for _, target in next, Targeting.viable() do
 		if target.character ~= model then
 			continue
 		end
