@@ -12714,21 +12714,36 @@ local GameAdapter = require("Game/GameAdapter")
 ---@module Features.Combat.AttributeListener
 local AttributeListener = require("Features/Combat/AttributeListener")
 
+---@module GUI.Library
+local Library = require("GUI/Library")
+
+local function debugAutoDefense(message, ...)
+	if not Configuration.expectToggleValue("AutoDefenseDebug") then
+		return
+	end
+
+	Library:AddTelemetryEntry("[AP] " .. string.format(message, ...))
+end
+
 ---Deflect. This is called this way because it can either give parry or block frames depending on whether or not parry is on cooldown.
 function InputClient.deflect()
 	AttributeListener.markParry()
 
+	debugAutoDefense("deflect begin")
 	InputClient.block(true)
 
 	task.wait(Configuration.expectOptionValue("DeflectHoldTime") / 1000)
 
 	InputClient.block(false)
+	debugAutoDefense("deflect end")
 end
 
 ---Block.
 ---@param state boolean
 function InputClient.block(state)
-	return GameAdapter.performBlock(state)
+	local success = GameAdapter.performBlock(state)
+	debugAutoDefense("block state=%s success=%s", tostring(state), tostring(success))
+	return success
 end
 
 ---Dash.
@@ -13597,6 +13612,7 @@ local function seedDuelingGroundsStarterTimings()
 		action._type = "Parry"
 		action._when = starter.delay
 		action.hitbox = Vector3.new(15, 10, 23)
+		action.ihbc = true
 	end
 
 	for _, starter in ipairs(DUELING_GROUNDS_STARTER_TIMINGS) do
@@ -14355,6 +14371,7 @@ function BuilderSection:raction()
 	self.actionName:SetRawValue("")
 	self.actionDelay:SetRawValue(0)
 	self.actionType:SetRawValue("Parry")
+	self.ignoreHitboxCheck:SetRawValue(false)
 	self.hitboxHeight:SetRawValue(0)
 	self.hitboxLength:SetRawValue(0)
 	self.hitboxWidth:SetRawValue(0)
@@ -14503,6 +14520,7 @@ function BuilderSection:baction(base)
 			self.actionName:SetRawValue(action.name)
 			self.actionDelay:SetRawValue(action._when or 0)
 			self.actionType:SetRawValue(action._type)
+			self.ignoreHitboxCheck:SetRawValue(action.ihbc)
 			self.hitboxWidth:SetRawValue(action.hitbox.X)
 			self.hitboxHeight:SetRawValue(action.hitbox.Y)
 			self.hitboxLength:SetRawValue(action.hitbox.Z)
@@ -14522,6 +14540,14 @@ function BuilderSection:baction(base)
 	})
 
 	self:daction(base)
+
+	self.ignoreHitboxCheck = base:AddToggle(nil, {
+		Text = "Ignore Hitbox Check",
+		Default = false,
+		Callback = self:anc(function(action, value)
+			action.ihbc = value
+		end),
+	})
 
 	self.hitboxLength = base:AddSlider(nil, {
 		Text = "Hitbox Length",
