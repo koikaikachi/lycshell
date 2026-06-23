@@ -7958,6 +7958,136 @@ function GameAdapter.getLocalRoot()
 	return GameAdapter.getRoot(GameAdapter.getLocalCharacter())
 end
 
+local LOCAL_COMBAT_PARTS = {
+	"LowerTorso",
+	"UpperTorso",
+	"Torso",
+	"Head",
+}
+
+local TARGET_COMBAT_PARTS = {
+	"HumanoidRootPart",
+	"LowerTorso",
+	"UpperTorso",
+	"Torso",
+	"Head",
+}
+
+local function addCombatCandidate(candidates, seen, label, instance)
+	if not instance or seen[instance] or not instance:IsA("BasePart") then
+		return
+	end
+
+	seen[instance] = true
+	candidates[#candidates + 1] = {
+		label = label,
+		instance = instance,
+		position = instance.Position,
+	}
+end
+
+local function addCombatPartNames(candidates, seen, model, names)
+	for _, name in ipairs(names) do
+		addCombatCandidate(candidates, seen, name, model:FindFirstChild(name))
+	end
+end
+
+local function addRootColliderReference(candidates, seen, model)
+	for _, descendant in ipairs(model:GetDescendants()) do
+		if descendant.Name ~= "RootColliderReference" or not descendant:IsA("ObjectValue") then
+			continue
+		end
+
+		addCombatCandidate(candidates, seen, "RootColliderReference.Value", descendant.Value)
+	end
+end
+
+function GameAdapter.getCombatPositionCandidates(subject, isLocal)
+	local candidates = {}
+	local seen = {}
+
+	if typeof(subject) == "Vector3" then
+		candidates[#candidates + 1] = {
+			label = "Vector3",
+			instance = nil,
+			position = subject,
+		}
+		return candidates
+	end
+
+	if typeof(subject) ~= "Instance" then
+		return candidates
+	end
+
+	if subject:IsA("BasePart") then
+		addCombatCandidate(candidates, seen, subject.Name, subject)
+		return candidates
+	end
+
+	if not subject:IsA("Model") then
+		return candidates
+	end
+
+	if isLocal == nil then
+		isLocal = GameAdapter.isLocalCharacter(subject)
+	end
+
+	if isLocal then
+		addRootColliderReference(candidates, seen, subject)
+		addCombatPartNames(candidates, seen, subject, LOCAL_COMBAT_PARTS)
+	else
+		addCombatPartNames(candidates, seen, subject, TARGET_COMBAT_PARTS)
+	end
+
+	local root = GameAdapter.getRoot(subject)
+	if #candidates == 0 then
+		addCombatCandidate(candidates, seen, "FallbackRoot", root)
+	end
+
+	return candidates
+end
+
+function GameAdapter.getCombatPosition(subject, isLocal)
+	local candidates = GameAdapter.getCombatPositionCandidates(subject, isLocal)
+	local first = candidates[1]
+	return first and first.position or nil
+end
+
+function GameAdapter.getFlatDistance(leftPosition, rightPosition)
+	if not leftPosition or not rightPosition then
+		return nil
+	end
+
+	local delta = leftPosition - rightPosition
+	return Vector3.new(delta.X, 0, delta.Z).Magnitude
+end
+
+function GameAdapter.getCombatDistance(left, right, leftIsLocal, rightIsLocal)
+	local leftCandidates = GameAdapter.getCombatPositionCandidates(left, leftIsLocal)
+	local rightCandidates = GameAdapter.getCombatPositionCandidates(right, rightIsLocal)
+	local best = nil
+
+	for _, leftCandidate in ipairs(leftCandidates) do
+		for _, rightCandidate in ipairs(rightCandidates) do
+			local distance = GameAdapter.getFlatDistance(leftCandidate.position, rightCandidate.position)
+			if distance and (not best or distance < best) then
+				best = distance
+			end
+		end
+	end
+
+	return best
+end
+
+function GameAdapter.getDistanceFromLocal(subject)
+	local localCharacter = GameAdapter.getLocalCharacter()
+	if not localCharacter then
+		return nil
+	end
+
+	return GameAdapter.getCombatDistance(localCharacter, subject, true, false)
+end
+
 function GameAdapter.getPlayerFromCharacter(model)
 	return model and players:GetPlayerFromCharacter(model)
 end
@@ -8133,6 +8263,38 @@ local function appendChildren(lines, label, instance, limit)
 	end
 end
 
+local function formatVector3(position)
+	return string.format("%.2f, %.2f, %.2f", position.X, position.Y, position.Z)
+end
+
+local function appendCombatCandidates(lines, label, subject, isLocal, indent, limit)
+	indent = indent or ""
+	limit = limit or 8
+
+	local candidates = GameAdapter.getCombatPositionCandidates(subject, isLocal)
+	if #candidates == 0 then
+		lines[#lines + 1] = string.format("%s%s combat candidates: none", indent, label)
+		return
+	end
+
+	lines[#lines + 1] = string.format("%s%s combat candidates:", indent, label)
+
+	for index, candidate in ipairs(candidates) do
+		if index > limit then
+			lines[#lines + 1] = string.format("%s  ... %i more", indent, #candidates - limit)
+			break
+		end
+
+		lines[#lines + 1] = string.format(
+			"%s  %s: %s @ %s",
+			indent,
+			candidate.label,
+			GameAdapter.getInstancePath(candidate.instance),
+			formatVector3(candidate.position)
+		)
+	end
+end
+
 local function appendAnimatorTracks(lines, model)
 	if not model then
 		return
@@ -8244,6 +8406,7 @@ function GameAdapter.buildLocalStateReport()
 	appendAttributes(lines, "Character", character)
 	appendAttributes(lines, "Humanoid", humanoid)
 	appendAttributes(lines, "Root", root)
+	appendCombatCandidates(lines, "Local", character, true)
 	appendChildren(lines, "Character", character, 40)
 
 	local backpack = localPlayer and localPlayer:FindFirstChildOfClass("Backpack")
@@ -8260,10 +8423,8 @@ function GameAdapter.buildTargetDebugReport(maxDistance, limit)
 	local candidates = GameAdapter.getTargetCandidates()
 
 	table.sort(candidates, function(left, right)
-		local leftRoot = GameAdapter.getRoot(left)
-		local rightRoot = GameAdapter.getRoot(right)
-		local leftDistance = localRoot and leftRoot and (leftRoot.Position - localRoot.Position).Magnitude or math.huge
-		local rightDistance = localRoot and rightRoot and (rightRoot.Position - localRoot.Position).Magnitude or math.huge
+		local leftDistance = GameAdapter.getDistanceFromLocal(left) or math.huge
+		local rightDistance = GameAdapter.getDistanceFromLocal(right) or math.huge
 		return leftDistance < rightDistance
 	end)
 
@@ -8274,6 +8435,8 @@ function GameAdapter.buildTargetDebugReport(maxDistance, limit)
 		string.format("LocalRoot: %s", GameAdapter.getInstancePath(localRoot)),
 		string.format("TargetContainers: %i", #GameAdapter.getTargetContainers()),
 	}
+
+	appendCombatCandidates(lines, "Local", GameAdapter.getLocalCharacter(), true)
 
 	for index, container in ipairs(GameAdapter.getTargetContainers()) do
 		lines[#lines + 1] = string.format("  [%i] %s", index, GameAdapter.getInstancePath(container))
@@ -8286,7 +8449,7 @@ function GameAdapter.buildTargetDebugReport(maxDistance, limit)
 		local root = GameAdapter.getRoot(model)
 		local humanoid = GameAdapter.getHumanoid(model)
 		local player = GameAdapter.getPlayerFromCharacter(model)
-		local distance = localRoot and root and (root.Position - localRoot.Position).Magnitude or math.huge
+		local distance = GameAdapter.getDistanceFromLocal(model) or math.huge
 
 		if distance <= maxDistance then
 			emitted += 1
@@ -8295,7 +8458,8 @@ function GameAdapter.buildTargetDebugReport(maxDistance, limit)
 			lines[#lines + 1] = string.format("  player: %s", GameAdapter.getInstancePath(player))
 			lines[#lines + 1] = string.format("  humanoid: %s", GameAdapter.getInstancePath(humanoid))
 			lines[#lines + 1] = string.format("  root: %s", GameAdapter.getInstancePath(root))
-			lines[#lines + 1] = string.format("  distance: %.1f", distance)
+			lines[#lines + 1] = string.format("  combat distance: %.1f", distance)
+			appendCombatCandidates(lines, "target", model, false, "  ", 6)
 
 			if humanoid then
 				lines[#lines + 1] = string.format("  health: %.1f / %.1f", humanoid.Health, humanoid.MaxHealth)
@@ -8522,18 +8686,28 @@ function GameAdapter.preventSlow(_character, _humanoid)
 end
 
 function GameAdapter.isLocalRootInBox(cframe, size)
-	local root = GameAdapter.getLocalRoot()
-	if not root then
+	local localCharacter = GameAdapter.getLocalCharacter()
+	local candidates = GameAdapter.getCombatPositionCandidates(localCharacter, true)
+	if #candidates == 0 then
 		return false
 	end
 
 	local halfSize = size / 2
-	local padding = root.Size / 2
-	local localPosition = cframe:PointToObjectSpace(root.Position)
 
-	return math.abs(localPosition.X) <= halfSize.X + padding.X
-		and math.abs(localPosition.Y) <= halfSize.Y + padding.Y
-		and math.abs(localPosition.Z) <= halfSize.Z + padding.Z
+	for _, candidate in ipairs(candidates) do
+		local padding = candidate.instance and candidate.instance.Size / 2 or Vector3.zero
+		local localPosition = cframe:PointToObjectSpace(candidate.position)
+
+		if
+			math.abs(localPosition.X) <= halfSize.X + padding.X
+			and math.abs(localPosition.Y) <= halfSize.Y + padding.Y
+			and math.abs(localPosition.Z) <= halfSize.Z + padding.Z
+		then
+			return true
+		end
+	end
+
+	return false
 end
 
 function GameAdapter.getPlayerTags(_player, _character)
@@ -9977,20 +10151,27 @@ local updateHistory = LPH_NO_VIRTUALIZE(function()
 
 	lastHistoryUpdate = os.clock()
 
-	local humanoidRootPart = GameAdapter.getLocalRoot()
-	if not humanoidRootPart then
+	local character = GameAdapter.getLocalCharacter()
+	local localPosition = GameAdapter.getCombatPosition(character, true)
+	local localRoot = GameAdapter.getRoot(character)
+	if not localPosition then
 		return
 	end
 
-	PositionHistory.add(players.LocalPlayer, humanoidRootPart.CFrame, tick())
+	local localCFrame = localRoot
+		and CFrame.lookAt(localPosition, localPosition + localRoot.CFrame.LookVector, localRoot.CFrame.UpVector)
+		or CFrame.new(localPosition)
+
+	PositionHistory.add(players.LocalPlayer, localCFrame, tick())
 
 	for _, entity in next, GameAdapter.getTargetCandidates() do
 		local proot = GameAdapter.getRoot(entity)
-		if not proot then
+		local position = GameAdapter.getCombatPosition(entity, false)
+		if not proot or not position then
 			continue
 		end
 
-		PositionHistory.add(entity, proot.CFrame, tick())
+		PositionHistory.add(entity, CFrame.lookAt(position, position + proot.CFrame.LookVector, proot.CFrame.UpVector), tick())
 	end
 end)
 
@@ -10504,8 +10685,8 @@ AnimatorDefender.pfh = LPH_NO_VIRTUALIZE(function(self, options)
 		return false
 	end
 
-	local localRoot = GameAdapter.getLocalRoot()
-	if not localRoot then
+	local localPosition = GameAdapter.getCombatPosition(GameAdapter.getLocalCharacter(), true)
+	if not localPosition then
 		return false
 	end
 
@@ -10521,7 +10702,7 @@ AnimatorDefender.pfh = LPH_NO_VIRTUALIZE(function(self, options)
 	local result = false
 	local store = OriginalStore.new()
 
-	store:run(root, "CFrame", CFrame.lookAt(root.Position, localRoot.Position), function()
+	store:run(root, "CFrame", CFrame.lookAt(root.Position, localPosition), function()
 		result = self:hc(clone, nil)
 	end)
 
@@ -11121,22 +11302,7 @@ function Defender:distance(from)
 		return
 	end
 
-	local entRootPart = from
-
-	if from:IsA("Model") then
-		entRootPart = GameAdapter.getRoot(from)
-	end
-
-	if not entRootPart then
-		return
-	end
-
-	local localRootPart = GameAdapter.getLocalRoot()
-	if not localRootPart then
-		return
-	end
-
-	return (entRootPart.Position - localRootPart.Position).Magnitude
+	return GameAdapter.getDistanceFromLocal(from)
 end
 
 ---Find target - hookable function.
@@ -11356,8 +11522,8 @@ Defender.hitbox = LPH_NO_VIRTUALIZE(function(self, cframe, fd, size, filter)
 	overlapParams.FilterDescendantsInstances = shouldManualFilter and {} or filter
 	overlapParams.FilterType = shouldManualFilter and Enum.RaycastFilterType.Exclude or Enum.RaycastFilterType.Include
 
-	local root = GameAdapter.getLocalRoot()
-	if not root then
+	local localCandidates = GameAdapter.getCombatPositionCandidates(GameAdapter.getLocalCharacter(), true)
+	if #localCandidates == 0 then
 		return nil, nil
 	end
 
@@ -11504,7 +11670,8 @@ Defender.hc = LPH_NO_VIRTUALIZE(function(self, options, info)
 	local timing = options.timing
 
 	-- Run basic validation.
-	local root = GameAdapter.getLocalRoot()
+	local localCandidates = GameAdapter.getCombatPositionCandidates(GameAdapter.getLocalCharacter(), true)
+	local root = localCandidates[1] and localCandidates[1].instance or GameAdapter.getLocalRoot()
 	if not root then
 		return false
 	end
@@ -12269,8 +12436,9 @@ local userInputService = game:GetService("UserInputService")
 ---Get a list of all viable targets.
 ---@return Target[]
 Targeting.viable = LPH_NO_VIRTUALIZE(function()
-	local localRootPart = GameAdapter.getLocalRoot()
-	if not localRootPart then
+	local localCharacter = GameAdapter.getLocalCharacter()
+	local localPosition = GameAdapter.getCombatPosition(localCharacter, true)
+	if not localPosition then
 		return {}
 	end
 
@@ -12305,6 +12473,11 @@ Targeting.viable = LPH_NO_VIRTUALIZE(function()
 			continue
 		end
 
+		local targetPosition = GameAdapter.getCombatPosition(entity, false)
+		if not targetPosition then
+			continue
+		end
+
 		if not GameAdapter.isAlive(entity) then
 			continue
 		end
@@ -12320,8 +12493,12 @@ Targeting.viable = LPH_NO_VIRTUALIZE(function()
 			continue
 		end
 
-		local fieldOfViewToEntity =
-			currentCamera.CFrame.LookVector:Dot((localRootPart.Position - rootPart.Position).Unit)
+		local directionToEntity = localPosition - targetPosition
+		if directionToEntity.Magnitude <= 0 then
+			continue
+		end
+
+		local fieldOfViewToEntity = currentCamera.CFrame.LookVector:Dot(directionToEntity.Unit)
 
 		local fieldOfViewLimit = Configuration.expectOptionValue("FOVLimit")
 
@@ -12329,7 +12506,11 @@ Targeting.viable = LPH_NO_VIRTUALIZE(function()
 			continue
 		end
 
-		local currentDistance = (rootPart.Position - localRootPart.Position).Magnitude
+		local currentDistance = GameAdapter.getCombatDistance(localCharacter, entity, true, false)
+		if not currentDistance then
+			continue
+		end
+
 		if currentDistance > Configuration.expectOptionValue("DistanceLimit") then
 			continue
 		end
@@ -12344,7 +12525,7 @@ Targeting.viable = LPH_NO_VIRTUALIZE(function()
 
 		local mousePosition = userInputService:GetMouseLocation()
 		local unitRay = workspace.CurrentCamera:ScreenPointToRay(mousePosition.X, mousePosition.Y)
-		local distanceToCrosshair = unitRay:Distance(rootPart.Position)
+		local distanceToCrosshair = unitRay:Distance(targetPosition)
 
 		targets[#targets + 1] =
 			Target.new(entity, humanoid, rootPart, distanceToCrosshair, fieldOfViewToEntity, currentDistance)
@@ -18084,6 +18265,9 @@ local Configuration = require("Utility/Configuration")
 ---@module Utility.Maid
 local Maid = require("Utility/Maid")
 
+---@module Game.GameAdapter
+local GameAdapter = require("Game/GameAdapter")
+
 ---@class InstanceESP
 ---@field identifier string
 ---@field maid Maid
@@ -18094,9 +18278,6 @@ local Maid = require("Utility/Maid")
 local InstanceESP = {}
 InstanceESP.__index = InstanceESP
 InstanceESP.__type = "InstanceESP"
-
--- Services.
-local playersService = game:GetService("Players")
 
 -- Formats.
 local ESP_DISTANCE_FORMAT = "%s [%i]"
@@ -18155,19 +18336,10 @@ InstanceESP.update = LPH_NO_VIRTUALIZE(function(self, position, tags)
 		return self:visible(false)
 	end
 
-	local localPlayer = playersService.LocalPlayer
-	local localCharacter = localPlayer and localPlayer.Character
-
-	if not localCharacter then
+	local distance = GameAdapter.getDistanceFromLocal(position)
+	if not distance then
 		return self:visible(false)
 	end
-
-	local localRoot = localCharacter:FindFirstChild("HumanoidRootPart")
-	if not localRoot then
-		return self:visible(false)
-	end
-
-	local distance = (localRoot.Position - position).Magnitude
 
 	if distance > Configuration.idOptionValue(identifier, "MaxDistance") then
 		return self:visible(false)
@@ -18356,7 +18528,7 @@ PlayerESP.update = LPH_NO_VIRTUALIZE(function(self)
 		return self:visible(false)
 	end
 
-	local humanoidRootPart = model:FindFirstChild("HumanoidRootPart")
+	local humanoidRootPart = GameAdapter.getRoot(model)
 	if not humanoidRootPart then
 		return self:visible(false)
 	end
@@ -18398,14 +18570,14 @@ PlayerESP.update = LPH_NO_VIRTUALIZE(function(self)
 		tags[#tags + 1] = ESP_HEALTH_BARS:format(healthInBars)
 	end
 
-	local usedPosition = humanoidRootPart.Position
+	local usedPosition = GameAdapter.getCombatPosition(model, false) or humanoidRootPart.Position
 	local currentCamera = workspace.CurrentCamera
 	local character = players.LocalPlayer.Character
-	local rootPart = character and character:FindFirstChild("HumanoidRootPart")
+	local localPosition = GameAdapter.getCombatPosition(character, true)
 
-	if Configuration.idToggleValue(identifier, "ShowViewAngle") and rootPart then
+	if Configuration.idToggleValue(identifier, "ShowViewAngle") and localPosition then
 		tags[#tags + 1] = ESP_VIEW_ANGLE:format(
-			currentCamera.CFrame.LookVector:Dot((rootPart.Position - usedPosition).Unit) * -1,
+			currentCamera.CFrame.LookVector:Dot((localPosition - usedPosition).Unit) * -1,
 			math.cos(math.rad((Configuration.expectOptionValue("FOVLimit"))))
 		)
 	end
