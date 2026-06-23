@@ -7958,6 +7958,36 @@ function GameAdapter.getLocalRoot()
 	return GameAdapter.getRoot(GameAdapter.getLocalCharacter())
 end
 
+local function isFiniteNumber(value)
+	return typeof(value) == "number" and value == value and value > -math.huge and value < math.huge
+end
+
+local function isFiniteVector3(value)
+	return typeof(value) == "Vector3"
+		and isFiniteNumber(value.X)
+		and isFiniteNumber(value.Y)
+		and isFiniteNumber(value.Z)
+end
+
+function GameAdapter.getCameraFocusPosition()
+	local currentCamera = workspace.CurrentCamera
+	if not currentCamera then
+		return nil
+	end
+
+	local focusPosition = currentCamera.Focus.Position
+	if isFiniteVector3(focusPosition) then
+		return focusPosition
+	end
+
+	local cameraPosition = currentCamera.CFrame.Position
+	if isFiniteVector3(cameraPosition) then
+		return cameraPosition
+	end
+
+	return nil
+end
+
 local LOCAL_COMBAT_PARTS = {
 	"LowerTorso",
 	"UpperTorso",
@@ -7973,17 +8003,32 @@ local TARGET_COMBAT_PARTS = {
 	"Head",
 }
 
-local function addCombatCandidate(candidates, seen, label, instance)
-	if not instance or seen[instance] or not instance:IsA("BasePart") then
+local function addCombatPositionCandidate(candidates, seen, label, instance, position)
+	if not isFiniteVector3(position) then
 		return
 	end
 
-	seen[instance] = true
+	if instance and seen[instance] then
+		return
+	end
+
+	if instance then
+		seen[instance] = true
+	end
+
 	candidates[#candidates + 1] = {
 		label = label,
 		instance = instance,
-		position = instance.Position,
+		position = position,
 	}
+end
+
+local function addCombatCandidate(candidates, seen, label, instance)
+	if not instance or not instance:IsA("BasePart") then
+		return
+	end
+
+	addCombatPositionCandidate(candidates, seen, label, instance, instance.Position)
 end
 
 local function addCombatPartNames(candidates, seen, model, names)
@@ -8007,11 +8052,7 @@ function GameAdapter.getCombatPositionCandidates(subject, isLocal)
 	local seen = {}
 
 	if typeof(subject) == "Vector3" then
-		candidates[#candidates + 1] = {
-			label = "Vector3",
-			instance = nil,
-			position = subject,
-		}
+		addCombatPositionCandidate(candidates, seen, "Vector3", nil, subject)
 		return candidates
 	end
 
@@ -8033,6 +8074,7 @@ function GameAdapter.getCombatPositionCandidates(subject, isLocal)
 	end
 
 	if isLocal then
+		addCombatPositionCandidate(candidates, seen, "CameraFocus", nil, GameAdapter.getCameraFocusPosition())
 		addRootColliderReference(candidates, seen, subject)
 		addCombatPartNames(candidates, seen, subject, LOCAL_COMBAT_PARTS)
 	else
@@ -8062,9 +8104,23 @@ function GameAdapter.getFlatDistance(leftPosition, rightPosition)
 	return Vector3.new(delta.X, 0, delta.Z).Magnitude
 end
 
+local function selectDistanceCandidates(candidates, isLocal)
+	if not isLocal then
+		return candidates
+	end
+
+	for _, candidate in ipairs(candidates) do
+		if candidate.label == "CameraFocus" then
+			return { candidate }
+		end
+	end
+
+	return candidates
+end
+
 function GameAdapter.getCombatDistance(left, right, leftIsLocal, rightIsLocal)
-	local leftCandidates = GameAdapter.getCombatPositionCandidates(left, leftIsLocal)
-	local rightCandidates = GameAdapter.getCombatPositionCandidates(right, rightIsLocal)
+	local leftCandidates = selectDistanceCandidates(GameAdapter.getCombatPositionCandidates(left, leftIsLocal), leftIsLocal)
+	local rightCandidates = selectDistanceCandidates(GameAdapter.getCombatPositionCandidates(right, rightIsLocal), rightIsLocal)
 	local best = nil
 
 	for _, leftCandidate in ipairs(leftCandidates) do
@@ -11004,7 +11060,7 @@ AnimatorDefender.process = LPH_NO_VIRTUALIZE(function(self, track)
 
 	local configuredTiming = SaveManager.as:index(aid)
 
-	if ilr then
+	if ilr or configuredTiming then
 		debugAutoDefense(
 			"seen animation=%s entity=%s distance=%s inLoggerRange=%s autoDefense=%s configured=%s",
 			aid,
@@ -11030,7 +11086,7 @@ AnimatorDefender.process = LPH_NO_VIRTUALIZE(function(self, track)
 	---@type AnimationTiming?
 	local timing = self:initial(self.entity, SaveManager.as, self.entity.Name, aid)
 	if not timing then
-		if ilr then
+		if ilr or configuredTiming then
 			debugAutoDefense(
 				"no usable timing for animation=%s entity=%s configured=%s distance=%s",
 				aid,
@@ -11560,19 +11616,14 @@ Defender.initial = LPH_NO_VIRTUALIZE(function(self, from, pair, name, key)
 
 	-- Check for distance; if we have a timing.
 	if timing and (distance < PP_SCRAMBLE_NUM(timing.imdd) or distance > PP_SCRAMBLE_NUM(timing.imxd)) then
-		if
-			distance >= (Configuration.expectOptionValue("MinimumLoggerDistance") or 0)
-			and distance <= (Configuration.expectOptionValue("MaximumLoggerDistance") or 0)
-		then
-			debugAutoDefense(
-				"no usable timing=%s key=%s reason=distance distance=%.1f range=%.1f-%.1f",
-				PP_SCRAMBLE_STR(timing.name),
-				PP_SCRAMBLE_STR(key),
-				distance,
-				PP_SCRAMBLE_NUM(timing.imdd),
-				PP_SCRAMBLE_NUM(timing.imxd)
-			)
-		end
+		debugAutoDefense(
+			"no usable timing=%s key=%s reason=distance distance=%.1f range=%.1f-%.1f",
+			PP_SCRAMBLE_STR(timing.name),
+			PP_SCRAMBLE_STR(key),
+			distance,
+			PP_SCRAMBLE_NUM(timing.imdd),
+			PP_SCRAMBLE_NUM(timing.imxd)
+		)
 
 		return nil
 	end
@@ -18346,7 +18397,7 @@ InstanceESP.update = LPH_NO_VIRTUALIZE(function(self, position, tags)
 	end
 
 	if Configuration.idToggleValue(identifier, "ShowDistance") then
-		label = ESP_DISTANCE_FORMAT:format(label, distance)
+		label = ESP_DISTANCE_FORMAT:format(label, math.floor(distance + 0.5))
 	end
 
 	-- Set visible.
