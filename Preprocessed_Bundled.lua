@@ -10676,6 +10676,14 @@ local function debugAutoDefense(message, ...)
 	Library:AddTelemetryEntry("[AP] " .. string.format(message, ...))
 end
 
+local function logAutoDefense(message, ...)
+	if not Configuration.expectToggleValue("ShowLoggerWindow") and not Configuration.expectToggleValue("AutoDefenseDebug") then
+		return
+	end
+
+	Library:AddTelemetryEntry("[AP] " .. string.format(message, ...))
+end
+
 ---Is animation stopped? Made into a function for de-duplication.
 ---@param self AnimatorDefender
 ---@param track AnimationTrack
@@ -11061,7 +11069,7 @@ AnimatorDefender.process = LPH_NO_VIRTUALIZE(function(self, track)
 	local configuredTiming = SaveManager.as:index(aid)
 
 	if ilr or configuredTiming then
-		debugAutoDefense(
+		logAutoDefense(
 			"seen animation=%s entity=%s distance=%s inLoggerRange=%s autoDefense=%s configured=%s",
 			aid,
 			GameAdapter.getDisplayName(self.entity),
@@ -11087,7 +11095,7 @@ AnimatorDefender.process = LPH_NO_VIRTUALIZE(function(self, track)
 	local timing = self:initial(self.entity, SaveManager.as, self.entity.Name, aid)
 	if not timing then
 		if ilr or configuredTiming then
-			debugAutoDefense(
+			logAutoDefense(
 				"no usable timing for animation=%s entity=%s configured=%s distance=%s",
 				aid,
 				GameAdapter.getDisplayName(self.entity),
@@ -11099,7 +11107,7 @@ AnimatorDefender.process = LPH_NO_VIRTUALIZE(function(self, track)
 		return
 	end
 
-	debugAutoDefense(
+	logAutoDefense(
 		"matched animation=%s timing=%s actions=%i rpue=%s umoa=%s",
 		aid,
 		timing.name,
@@ -11113,7 +11121,7 @@ AnimatorDefender.process = LPH_NO_VIRTUALIZE(function(self, track)
 	end
 
 	if not Configuration.expectToggleValue("EnableAutoDefense") then
-		debugAutoDefense("matched timing=%s but Enable Auto Defense is off", timing.name)
+		logAutoDefense("matched timing=%s but Enable Auto Defense is off", timing.name)
 		return
 	end
 
@@ -11162,7 +11170,7 @@ AnimatorDefender.process = LPH_NO_VIRTUALIZE(function(self, track)
 	---@note: Start processing the timing. Add the actions if we're not RPUE.
 	if not timing.rpue then
 		if timing.actions and timing.actions:count() == 0 then
-			debugAutoDefense("matched timing=%s but it has no actions", timing.name)
+			logAutoDefense("matched timing=%s but it has no actions", timing.name)
 		end
 
 		return self:actions(timing)
@@ -11320,6 +11328,14 @@ local PREDICTION_LENIENCY_MULTI = 5.0
 
 local function debugAutoDefense(message, ...)
 	if not Configuration.expectToggleValue("AutoDefenseDebug") then
+		return
+	end
+
+	Library:AddTelemetryEntry("[AP] " .. string.format(message, ...))
+end
+
+local function logAutoDefense(message, ...)
+	if not Configuration.expectToggleValue("ShowLoggerWindow") and not Configuration.expectToggleValue("AutoDefenseDebug") then
 		return
 	end
 
@@ -11616,7 +11632,7 @@ Defender.initial = LPH_NO_VIRTUALIZE(function(self, from, pair, name, key)
 
 	-- Check for distance; if we have a timing.
 	if timing and (distance < PP_SCRAMBLE_NUM(timing.imdd) or distance > PP_SCRAMBLE_NUM(timing.imxd)) then
-		debugAutoDefense(
+		logAutoDefense(
 			"no usable timing=%s key=%s reason=distance distance=%.1f range=%.1f-%.1f",
 			PP_SCRAMBLE_STR(timing.name),
 			PP_SCRAMBLE_STR(key),
