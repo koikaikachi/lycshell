@@ -8774,6 +8774,24 @@ function GameAdapter.getPlayerUltimate(_player, _character)
 	return nil
 end
 
+function GameAdapter.getPlayerCombatStyle(player, character)
+	local playerData = character and character:FindFirstChild("PlayerData")
+	local style = playerData and playerData:GetAttribute("CombatStyle")
+
+	if typeof(style) == "string" and #style > 0 then
+		return style
+	end
+
+	playerData = player and player:FindFirstChild("PlayerData")
+	style = playerData and playerData:GetAttribute("CombatStyle")
+
+	if typeof(style) == "string" and #style > 0 then
+		return style
+	end
+
+	return nil
+end
+
 function GameAdapter.getAveragePing(player)
 	return player and player:GetAttribute("AveragePing")
 end
@@ -16750,7 +16768,7 @@ function VisualsTab.initESPOptimizations(groupbox)
 	groupbox:AddToggle("ESPSplitUpdates", {
 		Text = "ESP Split Updates",
 		Tooltip = "This is an optimization where the ESP will split updating the object pool into multiple frames.",
-		Default = false,
+		Default = true,
 	})
 
 	local esuDepBox = groupbox:AddDependencyBox()
@@ -16759,7 +16777,7 @@ function VisualsTab.initESPOptimizations(groupbox)
 		Text = "ESP Split Frames",
 		Tooltip = "How many frames we have to split the object pool into.",
 		Suffix = "f",
-		Default = 64,
+		Default = 16,
 		Min = 1,
 		Max = 64,
 		Rounding = 0,
@@ -16847,6 +16865,11 @@ function VisualsTab.addPlayerESP(identifier, depbox)
 
 	depbox:AddToggle(Configuration.identify(identifier, "ShowUltimate"), {
 		Text = "Show Adapter Stat",
+		Default = false,
+	})
+
+	depbox:AddToggle(Configuration.identify(identifier, "ShowCombatStyle"), {
+		Text = "Show Combat Style",
 		Default = false,
 	})
 
@@ -18395,7 +18418,8 @@ end)
 ---@param self InstanceESP
 ---@param position Vector3
 ---@param tags string[]
-InstanceESP.update = LPH_NO_VIRTUALIZE(function(self, position, tags)
+---@param knownDistance number?
+InstanceESP.update = LPH_NO_VIRTUALIZE(function(self, position, tags, knownDistance)
 	local label = self.label
 	local identifier = self.identifier
 
@@ -18403,7 +18427,7 @@ InstanceESP.update = LPH_NO_VIRTUALIZE(function(self, position, tags)
 		return self:visible(false)
 	end
 
-	local distance = GameAdapter.getDistanceFromLocal(position)
+	local distance = knownDistance or GameAdapter.getDistanceFromLocal(position)
 	if not distance then
 		return self:visible(false)
 	end
@@ -18590,13 +18614,33 @@ PlayerESP.update = LPH_NO_VIRTUALIZE(function(self)
 	local player = self.player
 	local identifier = self.identifier
 
-	local humanoid = model:FindFirstChildOfClass("Humanoid")
+	if not model or not model.Parent then
+		return self:visible(false)
+	end
+
+	local humanoid = self.humanoid
+	if not humanoid or not humanoid.Parent then
+		humanoid = model:FindFirstChildOfClass("Humanoid")
+		self.humanoid = humanoid
+	end
+
 	if not humanoid then
 		return self:visible(false)
 	end
 
-	local humanoidRootPart = GameAdapter.getRoot(model)
+	local humanoidRootPart = self.root
+	if not humanoidRootPart or not humanoidRootPart.Parent then
+		humanoidRootPart = GameAdapter.getRoot(model)
+		self.root = humanoidRootPart
+	end
+
 	if not humanoidRootPart then
+		return self:visible(false)
+	end
+
+	local usedPosition = GameAdapter.getCombatPosition(model, false) or humanoidRootPart.Position
+	local distance = GameAdapter.getDistanceFromLocal(usedPosition)
+	if not distance or distance > (Configuration.idOptionValue(identifier, "MaxDistance") or math.huge) then
 		return self:visible(false)
 	end
 
@@ -18626,6 +18670,20 @@ PlayerESP.update = LPH_NO_VIRTUALIZE(function(self)
 		tags[#tags + 1] = ESP_ADAPTER_TAG:format(tag)
 	end
 
+	if Configuration.idToggleValue(identifier, "ShowCombatStyle") then
+		local now = os.clock()
+
+		if not self.lastCombatStyleUpdate or now - self.lastCombatStyleUpdate > 1.0 then
+			self.combatStyle = GameAdapter.getPlayerCombatStyle(player, model)
+			self.lastCombatStyleUpdate = now
+		end
+
+		local combatStyle = self.combatStyle
+		if combatStyle then
+			tags[#tags + 1] = ESP_ADAPTER_TAG:format(combatStyle)
+		end
+	end
+
 	if Configuration.idToggleValue(identifier, "ShowHealthPercentage") then
 		local percentage = health / maxHealth * 100
 		tags[#tags + 1] = ESP_HEALTH_PERCENTAGE:format(percentage)
@@ -18637,16 +18695,17 @@ PlayerESP.update = LPH_NO_VIRTUALIZE(function(self)
 		tags[#tags + 1] = ESP_HEALTH_BARS:format(healthInBars)
 	end
 
-	local usedPosition = GameAdapter.getCombatPosition(model, false) or humanoidRootPart.Position
-	local currentCamera = workspace.CurrentCamera
-	local character = players.LocalPlayer.Character
-	local localPosition = GameAdapter.getCombatPosition(character, true)
+	if Configuration.idToggleValue(identifier, "ShowViewAngle") then
+		local currentCamera = workspace.CurrentCamera
+		local character = players.LocalPlayer.Character
+		local localPosition = GameAdapter.getCombatPosition(character, true)
 
-	if Configuration.idToggleValue(identifier, "ShowViewAngle") and localPosition then
-		tags[#tags + 1] = ESP_VIEW_ANGLE:format(
-			currentCamera.CFrame.LookVector:Dot((localPosition - usedPosition).Unit) * -1,
-			math.cos(math.rad((Configuration.expectOptionValue("FOVLimit"))))
-		)
+		if currentCamera and localPosition then
+			tags[#tags + 1] = ESP_VIEW_ANGLE:format(
+				currentCamera.CFrame.LookVector:Dot((localPosition - usedPosition).Unit) * -1,
+				math.cos(math.rad((Configuration.expectOptionValue("FOVLimit"))))
+			)
+		end
 	end
 
 	if Configuration.idToggleValue(identifier, "ShowUltimate") then
@@ -18669,7 +18728,7 @@ PlayerESP.update = LPH_NO_VIRTUALIZE(function(self)
 		self.billboard.Adornee = expectedAdornee
 	end
 
-	InstanceESP.update(self, usedPosition, tags)
+	InstanceESP.update(self, usedPosition, tags, distance)
 
 	if not Configuration.idToggleValue(identifier, "MarkAllies") then
 		return
@@ -18698,6 +18757,8 @@ function PlayerESP.new(identifier, player, character)
 	self.character = character
 	self.identifier = identifier
 	self.shadow = self.maid:mark(shadow)
+	self.humanoid = character and character:FindFirstChildOfClass("Humanoid")
+	self.root = character and GameAdapter.getRoot(character)
 
 	if character and character:IsA("Model") and not Configuration.expectOptionValue("NoPersisentESP") then
 		character.ModelStreamingMode = Enum.ModelStreamingMode.Persistent
